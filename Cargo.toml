@@ -1,0 +1,13 @@
+[package]
+name = "shipcheck"
+version = "0.1.0"
+edition = "2021"
+description = "Pre-push quality gate: run checks in parallel, merge one report"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_yaml = "0.9"
+
+[profile.release]
+lto = true
+strip = true
