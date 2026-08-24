@@ -1,63 +1,13 @@
 // shipcheck v0.2 — reads .shipcheck.yml, runs each check in parallel,
 // reports pass/fail with durations in table or JSON form.
-use serde::Deserialize;
-use std::process::Command;
+// Core logic lives in the library crate (src/lib.rs) so it is unit-tested.
+use shipcheck::{parse_args, parse_config, run_check, Outcome};
 use std::sync::mpsc;
 use std::time::Instant;
 
-#[derive(Deserialize)]
-struct Config {
-    checks: Vec<Check>,
-}
-
-#[derive(Deserialize, Clone)]
-struct Check {
-    name: String,
-    cmd: String,
-    #[serde(default)]
-    optional: bool,
-}
-
-#[derive(Deserialize)]
-struct RawConfig {
-    #[serde(default)]
-    checks: Vec<Check>,
-}
-
-#[derive(Debug)]
-enum Outcome {
-    Pass(f64),
-    Warn(f64, i32),
-    Fail(f64, String, Option<i32>),
-}
-
-fn run_check(check: &Check) -> (String, Outcome) {
-    let start = Instant::now();
-    let out = Command::new("sh").arg("-c").arg(&check.cmd).output();
-    let dur = start.elapsed().as_secs_f64();
-    let name = check.name.clone();
-    match out {
-        Ok(o) if o.status.success() => (name, Outcome::Pass(dur)),
-        Ok(o) => {
-            let code = o.status.code();
-            if check.optional {
-                (name, Outcome::Warn(dur, code.unwrap_or(-1)))
-            } else {
-                let tail: String = String::from_utf8_lossy(&o.stderr)
-                    .lines()
-                    .last()
-                    .unwrap_or("")
-                    .to_string();
-                (name, Outcome::Fail(dur, tail, code))
-            }
-        }
-        Err(e) => (name, Outcome::Fail(dur, format!("spawn error: {e}"), None)),
-    }
-}
-
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    let json_mode = args.iter().any(|a| a == "--json");
+    let (path, json_mode) = parse_args(&args);
 
     // In --json mode the table goes to stderr; stdout carries only pure JSON.
     macro_rules! out {
@@ -65,12 +15,6 @@ fn main() {
             if json_mode { eprintln!($($arg)*) } else { println!($($arg)*) }
         };
     }
-
-    let path = args
-        .iter()
-        .find(|a| !a.starts_with('-') && *a != &args[0])
-        .cloned()
-        .unwrap_or_else(|| ".shipcheck.yml".to_string());
 
     let raw = match std::fs::read_to_string(&path) {
         Ok(s) => s,
@@ -80,22 +24,17 @@ fn main() {
         }
     };
 
-    // Accept both a bare list and a {checks: [...]} document
-    let config: Config = match serde_yaml::from_str::<Config>(&raw) {
-        Ok(c) => c,
-        Err(_) => match serde_yaml::from_str::<RawConfig>(&raw) {
-            Ok(r) => Config { checks: r.checks },
-            Err(e) => {
-                eprintln!("shipcheck: invalid config: {e}");
-                std::process::exit(2);
-            }
-        },
+    let config: shipcheck::Config = match parse_config(&raw) {
+        Ok(c) if !c.checks.is_empty() => c,
+        Ok(_) => {
+            eprintln!("shipcheck: no checks defined in {path}");
+            std::process::exit(2);
+        }
+        Err(e) => {
+            eprintln!("shipcheck: {e}");
+            std::process::exit(2);
+        }
     };
-
-    if config.checks.is_empty() {
-        eprintln!("shipcheck: no checks defined in {path}");
-        std::process::exit(2);
-    }
 
     out!(
         "shipcheck: running {} checks in parallel\n",
