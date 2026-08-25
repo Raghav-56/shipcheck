@@ -1,4 +1,6 @@
 // shipcheck v0.2 library — core logic split out of main so it is testable.
+//! Core logic for the `shipcheck` pre-ship gate: config parsing, CLI argument
+//! parsing, and single-check execution.
 use serde::Deserialize;
 use std::process::Command;
 use std::time::Instant;
@@ -8,6 +10,8 @@ pub struct Config {
     pub checks: Vec<Check>,
 }
 
+/// A single check: a human-readable `name` and the shell command `cmd` to run
+/// via `sh -c`. Optional checks downgrade failures to warnings.
 #[derive(Deserialize, Debug, Clone, PartialEq)]
 pub struct Check {
     pub name: String,
@@ -16,6 +20,9 @@ pub struct Check {
     pub optional: bool,
 }
 
+/// Result of running a single check: `Pass` with its duration in seconds,
+/// `Warn` when an optional check failed (duration + exit code), or `Fail`
+/// with duration, the captured stderr tail, and the exit code if known.
 #[derive(Debug, PartialEq)]
 pub enum Outcome {
     Pass(f64),
@@ -23,18 +30,21 @@ pub enum Outcome {
     Fail(f64, String, Option<i32>),
 }
 
-/// Parse CLI args: returns (config_path, json_mode).
-/// The path is the first non-flag argument after argv[0]; defaults to
+/// Parse CLI args: returns (config_path, json_mode, quiet_mode).
+/// The path is the first non-flag argument after `argv[0]`; defaults to
 /// ".shipcheck.yml". `--json` anywhere switches to JSON stdout mode.
-pub fn parse_args(args: &[String]) -> (String, bool) {
+/// `--quiet` anywhere suppresses non-error output (only FAIL lines and
+/// the failure summary are shown).
+pub fn parse_args(args: &[String]) -> (String, bool, bool) {
     let json_mode = args.iter().any(|a| a == "--json");
+    let quiet = args.iter().any(|a| a == "--quiet");
     let path = args
         .iter()
         .enumerate()
         .find(|(i, a)| *i > 0 && !a.starts_with('-'))
         .map(|(_, a)| a.clone())
         .unwrap_or_else(|| ".shipcheck.yml".to_string());
-    (path, json_mode)
+    (path, json_mode, quiet)
 }
 
 /// Parse a shipcheck config. Accepts both `{checks: [...]}` documents and
@@ -88,9 +98,10 @@ mod tests {
     #[test]
     fn args_default_path_and_no_json() {
         let argv = vec!["shipcheck".to_string()];
-        let (path, json) = parse_args(&argv);
+        let (path, json, quiet) = parse_args(&argv);
         assert_eq!(path, ".shipcheck.yml");
         assert!(!json);
+        assert!(!quiet);
     }
 
     #[test]
@@ -106,9 +117,33 @@ mod tests {
             "--json".to_string(),
             "cfg.yml".to_string(),
         ];
-        let (path, json) = parse_args(&argv);
+        let (path, json, _) = parse_args(&argv);
         assert!(json);
         assert_eq!(path, "cfg.yml");
+    }
+
+    #[test]
+    fn args_quiet_flag_detected_anywhere() {
+        let argv = vec![
+            "shipcheck".to_string(),
+            "cfg.yml".to_string(),
+            "--quiet".to_string(),
+        ];
+        let (path, _, quiet) = parse_args(&argv);
+        assert!(quiet);
+        assert_eq!(path, "cfg.yml");
+    }
+
+    #[test]
+    fn args_quiet_and_json_can_combine() {
+        let argv = vec![
+            "shipcheck".to_string(),
+            "--quiet".to_string(),
+            "--json".to_string(),
+        ];
+        let (_, json, quiet) = parse_args(&argv);
+        assert!(json);
+        assert!(quiet);
     }
 
     #[test]
@@ -118,7 +153,7 @@ mod tests {
             "--json".to_string(),
             "-x".to_string(),
         ];
-        let (path, _) = parse_args(&argv);
+        let (path, _, _) = parse_args(&argv);
         assert_eq!(path, ".shipcheck.yml");
     }
 

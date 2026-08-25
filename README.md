@@ -67,13 +67,13 @@ shipcheck: running 3 checks
 
 ## Status
 
-v0.1 — working and verified: sequential execution, PASS/WARN/FAIL semantics, durations, correct exit codes, both config shapes.
+v0.2 — working and verified: parallel execution, PASS/WARN/FAIL semantics, per-check durations, `--json` and `--quiet` flags, correct exit codes (1 = check failure, 2 = config error), both config shapes.
 
-## Roadmap (v0.2+)
+## Roadmap
 
-- [ ] Parallel execution of independent checks
+- [x] Parallel execution of independent checks
 - [ ] Secret-scanning pass (entropy + regex over the diff)
-- [ ] `--json` output for CI integration
+- [x] `--json` output for CI integration
 - [ ] GitHub Action wrapper
 
 MIT

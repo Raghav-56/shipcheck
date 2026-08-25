@@ -7,10 +7,25 @@ use std::time::Instant;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    let (path, json_mode) = parse_args(&args);
+
+    // `--version` / `-V` prints the crate version from Cargo and exits.
+    if args.iter().any(|a| a == "--version" || a == "-V") {
+        println!("shipcheck {}", env!("CARGO_PKG_VERSION"));
+        return;
+    }
+
+    let (path, json_mode, quiet) = parse_args(&args);
 
     // In --json mode the table goes to stderr; stdout carries only pure JSON.
+    // In --quiet mode non-error output (header, PASS/WARN lines, the success
+    // summary) is suppressed entirely; FAIL lines and the failure summary
+    // still print so errors remain visible.
     macro_rules! out {
+        ($($arg:tt)*) => {
+            if json_mode { eprintln!($($arg)*) } else if !quiet { println!($($arg)*) }
+        };
+    }
+    macro_rules! err_out {
         ($($arg:tt)*) => {
             if json_mode { eprintln!($($arg)*) } else { println!($($arg)*) }
         };
@@ -43,22 +58,26 @@ fn main() {
     let started = Instant::now();
 
     let (tx, rx) = mpsc::channel();
-    for check in config.checks.clone() {
-        let tx = tx.clone();
-        std::thread::spawn(move || {
-            tx.send(run_check(&check)).expect("send result");
-        });
-    }
+    // Scoped threads borrow the checks instead of cloning each one into a
+    // 'static thread (avoids N String clones of name+cmd per run). Each
+    // worker sends its config index so result ordering is O(n log n).
+    std::thread::scope(|s| {
+        for (idx, check) in config.checks.iter().enumerate() {
+            let tx = tx.clone();
+            s.spawn(move || {
+                tx.send((idx, run_check(check))).expect("send result");
+            });
+        }
+    });
     drop(tx);
-    // Preserve original order regardless of completion order.
-    let mut results: Vec<(String, Outcome)> = rx.iter().collect();
-    let order: Vec<String> = config.checks.iter().map(|c| c.name.clone()).collect();
-    results.sort_by_key(|(name, _)| order.iter().position(|n| n == name).unwrap_or(usize::MAX));
+    // Preserve original config order regardless of completion order.
+    let mut results: Vec<(usize, (String, Outcome))> = rx.iter().collect();
+    results.sort_by_key(|(idx, _)| *idx);
 
     let mut failed = 0usize;
     let mut json_items: Vec<String> = Vec::new();
 
-    for (name, outcome) in &results {
+    for (_, (name, outcome)) in &results {
         match outcome {
             Outcome::Pass(dur) => {
                 out!("  PASS  {name:<24} ({dur:.2?})");
@@ -76,7 +95,7 @@ fn main() {
                     Some(c) => format!(" exit {c}"),
                     None => String::new(),
                 };
-                out!("  FAIL  {name:<24}{extra} {}", detail.trim());
+                err_out!("  FAIL  {name:<24}{extra} {}", detail.trim());
                 let code_json = match code {
                     Some(c) => c.to_string(),
                     None => "null".to_string(),
@@ -92,12 +111,14 @@ fn main() {
     if json_mode {
         println!("[\n  {}\n]", json_items.join(",\n  "));
     } else {
-        println!();
+        if !quiet {
+            println!();
+        }
     }
     if failed == 0 {
         out!("✅ all checks passed — ship it ({total:.2}s wall)");
     } else {
-        out!("❌ {failed} check(s) failed — fix before pushing ({total:.2}s wall)");
+        err_out!("❌ {failed} check(s) failed — fix before pushing ({total:.2}s wall)");
         std::process::exit(1);
     }
 }

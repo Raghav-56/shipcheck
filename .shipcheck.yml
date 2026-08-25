@@ -1,6 +1,6 @@
 checks:
-  - name: python syntax
-    cmd: python3 -m py_compile ~/papertrail/papertrail.py
+  - name: unit tests
+    cmd: cargo test --quiet
   - name: disk space
     cmd: test $(df --output=pcent / | tail -1 | tr -dc '0-9') -lt 90
   - name: optional demo failure
