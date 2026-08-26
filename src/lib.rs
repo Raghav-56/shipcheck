@@ -5,8 +5,10 @@ use serde::Deserialize;
 use std::process::Command;
 use std::time::Instant;
 
+/// Top-level shipcheck config: the ordered list of checks to run.
 #[derive(Deserialize, Debug, Clone)]
 pub struct Config {
+    /// Checks run sequentially in listed order; any non-optional failure fails the gate.
     pub checks: Vec<Check>,
 }
 
