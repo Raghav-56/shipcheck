@@ -55,6 +55,66 @@ Rules:
 - `optional: true` check fails → `WARN`, exit code unaffected.
 - Missing file, invalid YAML, or zero checks → exit `2` (config error, not a check failure).
 
+## Flags
+
+| Flag | Effect |
+|---|---|
+| *(none)* | Runs `.shipcheck.yml`, prints the PASS/WARN/FAIL table to stdout |
+| `<path>` | First non-flag argument; config file to run (default `.shipcheck.yml`) |
+| `--json` | Stdout carries **only** the JSON report; all human output moves to stderr |
+| `--quiet` | Suppresses header, PASS/WARN lines, and the success summary. FAIL lines and the failure summary still print |
+| `--version`, `-V` | Print version and exit |
+
+Flags may appear anywhere; in `--json --quiet` mode stdout is pure JSON with nothing else.
+
+## Exit codes
+
+| Code | Meaning |
+|---|---|
+| `0` | All required checks passed (warnings allowed) |
+| `1` | One or more required checks failed |
+| `2` | Config error: file unreadable, invalid YAML, or zero checks defined |
+
+## JSON output (`--json`)
+
+Stdout is a pretty-printed JSON array of check results, in config order
+(regardless of completion order):
+
+```json
+[
+  {
+    "name": "lint",
+    "status": "pass",
+    "exit_code": null,
+    "duration_s": 0.41231
+  },
+  {
+    "name": "docs build",
+    "status": "warn",
+    "exit_code": 101,
+    "duration_s": 2.0345
+  },
+  {
+    "name": "tests",
+    "status": "fail",
+    "exit_code": 1,
+    "detail": "test result: FAILED. 1 passed; 1 failed",
+    "duration_s": 1.8723
+  }
+]
+```
+
+Schema per element:
+
+- `name` (string) — check name from the config.
+- `status` (string) — `"pass"`, `"warn"` (optional check failed), or `"fail"`.
+- `exit_code` (number \| null) — process exit code; `null` when unknown (pass, or spawn error).
+- `detail` (string, optional) — last line of stderr; present only on `"fail"`.
+- `duration_s` (number) — wall time of the check in seconds.
+
+Serialization is typed (`serde_json`), so names/details containing quotes or
+backslashes are escaped correctly.
+
 ## Example output
 
 ```
