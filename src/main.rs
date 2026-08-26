@@ -1,7 +1,7 @@
 // shipcheck v0.2 — reads .shipcheck.yml, runs each check in parallel,
 // reports pass/fail with durations in table or JSON form.
 // Core logic lives in the library crate (src/lib.rs) so it is unit-tested.
-use shipcheck::{parse_args, parse_config, run_check, Outcome};
+use shipcheck::{json_report, parse_args, parse_config, run_check, Outcome};
 use std::sync::mpsc;
 use std::time::Instant;
 
@@ -75,46 +75,38 @@ fn main() {
     results.sort_by_key(|(idx, _)| *idx);
 
     let mut failed = 0usize;
-    let mut json_items: Vec<String> = Vec::new();
 
     for (_, (name, outcome)) in &results {
         match outcome {
             Outcome::Pass(dur) => {
                 out!("  PASS  {name:<24} ({dur:.2?})");
-                json_items.push(format!(
-                    r#"{{"name":{name:?},"status":"pass","duration_s":{dur:.3}}}"#
-                ));
             }
             Outcome::Warn(dur, code) => {
                 out!("  WARN  {name:<24} ({dur:.2?}) exit {code}");
-                json_items.push(format!(r#"{{"name":{name:?},"status":"warn","exit_code":{code},"duration_s":{dur:.3}}}"#));
             }
-            Outcome::Fail(dur, detail, code) => {
+            Outcome::Fail(_, detail, code) => {
                 failed += 1;
                 let extra = match code {
                     Some(c) => format!(" exit {c}"),
                     None => String::new(),
                 };
                 err_out!("  FAIL  {name:<24}{extra} {}", detail.trim());
-                let code_json = match code {
-                    Some(c) => c.to_string(),
-                    None => "null".to_string(),
-                };
-                json_items.push(format!(
-                    r#"{{"name":{name:?},"status":"fail","exit_code":{code_json},"duration_s":{dur:.3},"detail":{detail:?}}}"#
-                ));
             }
         }
     }
 
-    let total = started.elapsed().as_secs_f64();
     if json_mode {
-        println!("[\n  {}\n]", json_items.join(",\n  "));
-    } else {
-        if !quiet {
-            println!();
-        }
+        // Typed serialization via serde_json: names and failure details are
+        // escaped correctly even when they contain quotes or backslashes.
+        let report: Vec<(String, Outcome)> = results.into_iter().map(|(_, r)| r).collect();
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json_report(&report)).expect("serialize report")
+        );
+    } else if !quiet {
+        println!();
     }
+    let total = started.elapsed().as_secs_f64();
     if failed == 0 {
         out!("✅ all checks passed — ship it ({total:.2}s wall)");
     } else {

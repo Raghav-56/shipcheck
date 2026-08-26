@@ -147,6 +147,44 @@ fn json_mode_failure_reports_fail_item_and_exit_one() {
 }
 
 #[test]
+fn json_mode_escapes_special_characters_in_names_and_details() {
+    // Regression: hand-built format! JSON broke on quotes/backslashes in
+    // check names or stderr details; serde_json must escape them.
+    let dir = fixture_dir(
+        "json-escape",
+        "checks:\n  - name: 'say \"hi\"'\n    cmd: 'echo bad \"quote\" line >&2; exit 1'\n",
+    );
+    let cfg = dir.join(".shipcheck.yml");
+    let out = run_binary(&["--json", cfg.to_str().unwrap()]);
+
+    assert_eq!(out.status.code(), Some(1), "stderr: {}", stderr(&out));
+    let parsed: serde_json::Value =
+        serde_json::from_str(&stdout(&out)).expect("stdout parses as JSON despite special chars");
+    let items = parsed.as_array().expect("array");
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["name"], "say \"hi\"");
+    assert_eq!(items[0]["status"], "fail");
+    assert!(items[0]["detail"].as_str().unwrap().contains("quote"));
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn json_mode_warn_item_includes_exit_code() {
+    let dir = fixture_dir(
+        "json-warn",
+        "checks:\n  - name: wip\n    cmd: exit 4\n    optional: true\n",
+    );
+    let cfg = dir.join(".shipcheck.yml");
+    let out = run_binary(&["--json", cfg.to_str().unwrap()]);
+
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", stderr(&out));
+    let parsed: serde_json::Value = serde_json::from_str(&stdout(&out)).expect("valid JSON");
+    assert_eq!(parsed[0]["status"], "warn");
+    assert_eq!(parsed[0]["exit_code"], 4);
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
 fn version_flag_prints_cargo_pkg_version_and_exits_zero() {
     let out = run_binary(&["--version"]);
 

@@ -1,7 +1,7 @@
 // shipcheck v0.2 library — core logic split out of main so it is testable.
 //! Core logic for the `shipcheck` pre-ship gate: config parsing, CLI argument
 //! parsing, and single-check execution.
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::process::Command;
 use std::time::Instant;
 
@@ -84,6 +84,124 @@ pub fn run_check(check: &Check) -> (String, Outcome) {
             }
         }
         Err(e) => (name, Outcome::Fail(dur, format!("spawn error: {e}"), None)),
+    }
+}
+
+/// One check result in machine-readable form, used for `--json` output.
+/// Field presence mirrors status: `exit_code` is always emitted (null when
+/// unknown), `detail` only on fail, so consumers can key on `status`.
+#[derive(Serialize, Debug, PartialEq)]
+pub struct CheckResult {
+    pub name: String,
+    pub status: &'static str,
+    pub exit_code: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    pub duration_s: f64,
+}
+
+/// Convert ordered run results into a typed JSON report. Serialization goes
+/// through serde_json rather than hand-built strings so names and failure
+/// details containing quotes or backslashes are escaped correctly.
+pub fn json_report(results: &[(String, Outcome)]) -> Vec<CheckResult> {
+    results
+        .iter()
+        .map(|(name, outcome)| match outcome {
+            Outcome::Pass(dur) => CheckResult {
+                name: name.clone(),
+                status: "pass",
+                exit_code: None,
+                detail: None,
+                duration_s: *dur,
+            },
+            Outcome::Warn(dur, code) => CheckResult {
+                name: name.clone(),
+                status: "warn",
+                exit_code: Some(*code),
+                detail: None,
+                duration_s: *dur,
+            },
+            Outcome::Fail(dur, detail, code) => CheckResult {
+                name: name.clone(),
+                status: "fail",
+                exit_code: *code,
+                detail: Some(detail.trim().to_string()),
+                duration_s: *dur,
+            },
+        })
+        .collect()
+}
+
+// ---- json_report tests ----
+
+#[cfg(test)]
+mod json_report_tests {
+    use super::*;
+
+    fn to_json(results: &[(String, Outcome)]) -> serde_json::Value {
+        serde_json::to_value(json_report(results)).expect("serialize report")
+    }
+
+    #[test]
+    fn json_report_pass_item() {
+        let v = to_json(&[("lint".into(), Outcome::Pass(0.123))]);
+        assert_eq!(v[0]["name"], "lint");
+        assert_eq!(v[0]["status"], "pass");
+        assert!(v[0]["exit_code"].is_null());
+        assert_eq!(v[0]["duration_s"], 0.123);
+        assert!(v[0].get("detail").is_none());
+    }
+
+    #[test]
+    fn json_report_warn_item_keeps_exit_code() {
+        let v = to_json(&[("wip".into(), Outcome::Warn(0.5, 9))]);
+        assert_eq!(v[0]["status"], "warn");
+        assert_eq!(v[0]["exit_code"], 9);
+        assert!(v[0].get("detail").is_none());
+    }
+
+    #[test]
+    fn json_report_fail_item_has_detail_and_optional_code() {
+        let v = to_json(&[
+            ("bad".into(), Outcome::Fail(1.0, " boom \n".into(), Some(3))),
+            ("worse".into(), Outcome::Fail(2.0, "killed".into(), None)),
+        ]);
+        assert_eq!(v[0]["status"], "fail");
+        assert_eq!(v[0]["detail"], "boom"); // trimmed
+        assert_eq!(v[0]["exit_code"], 3);
+        assert!(v[1]["exit_code"].is_null());
+        assert_eq!(v[1]["detail"], "killed");
+    }
+
+    #[test]
+    fn json_report_escapes_quotes_and_backslashes_in_names_and_details() {
+        // Hand-built format! strings produced invalid JSON here; serde must not.
+        let results = vec![
+            (
+                "say \"hi\" \\ done".to_string(),
+                Outcome::Fail(0.1, "line \"quoted\" \\ backslash".to_string(), Some(1)),
+            ),
+            ("tab\tname".to_string(), Outcome::Pass(0.2)),
+        ];
+        let text = serde_json::to_string(&json_report(&results)).expect("serialize");
+        let parsed: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
+        assert_eq!(parsed[0]["name"], "say \"hi\" \\ done");
+        assert_eq!(parsed[0]["detail"], "line \"quoted\" \\ backslash");
+        assert_eq!(parsed[1]["name"], "tab\tname");
+    }
+
+    #[test]
+    fn json_report_preserves_order_of_input() {
+        let results = vec![
+            ("a".to_string(), Outcome::Pass(0.01)),
+            ("b".to_string(), Outcome::Warn(0.02, 4)),
+            ("c".to_string(), Outcome::Fail(0.03, "x".into(), Some(1))),
+        ];
+        let v = to_json(&results);
+        assert_eq!(v.as_array().unwrap().len(), 3,);
+        assert_eq!(v[0]["name"], "a");
+        assert_eq!(v[1]["name"], "b");
+        assert_eq!(v[2]["name"], "c");
     }
 }
 
